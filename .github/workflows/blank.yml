@@ -9,15 +9,31 @@ on:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    # 失败自动重试，总共尝试 3 次（首次+2次重试）
     retry:
       max-attempts: 3
+      delay-seconds: 30
     permissions:
       contents: write
       packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # 校验必要文件：Dockerfile、setup_env.sh、setup_repo.sh
+      - name: Check required files
+        run: |
+          REQUIRED_FILES=(
+            "Dockerfile"
+            "setup_env.sh"
+            "setup_repo.sh"
+          )
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: 缺失必要文件 $file"
+              exit 1
+            fi
+          done
+          echo "所有必要文件校验通过"
 
       # 定义变量：仓库名作为镜像名
       - name: Set image info
