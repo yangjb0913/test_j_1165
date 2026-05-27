@@ -1,6 +1,5 @@
 name: Build Docker Image & Upload to Release
 
-# 触发规则：推送tag / 手动运行
 on:
   push:
     tags:
@@ -15,11 +14,9 @@ jobs:
       packages: write
 
     steps:
-      # 1. 拉取仓库代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 校验必需文件，缺失则直接终止
       - name: Verify required files
         run: |
           set -e
@@ -32,28 +29,25 @@ jobs:
           done
           echo "All required files exist."
 
-      # 3. 提取仓库名、版本Tag为全局变量
       - name: Set image name and tag
         id: image_meta
         run: |
           set -e
-          # 截取仓库名 (owner/repo -> repo)
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          # 截取 git tag
           IMG_TAG="${GITHUB_REF#refs/tags/}"
           echo "IMAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
           echo "IMAGE_TAG=${IMG_TAG}" >> $GITHUB_OUTPUT
 
-      # 4. 构建镜像（使用标准重试Action，最多尝试3次）
+      # 构建镜像：补充超时参数，消除报错
       - name: Build Docker image
         uses: nick-fields/retry@v3
         with:
           max_attempts: 3
           retry_wait_seconds: 30
+          timeout_minutes: 30
           command: |
             docker build -t ${{ steps.image_meta.outputs.IMAGE_NAME }}:${{ steps.image_meta.outputs.IMAGE_TAG }} .
 
-      # 5. 导出镜像为tar并压缩
       - name: Export and compress image
         id: export_tar
         run: |
@@ -68,7 +62,6 @@ jobs:
 
           echo "ASSET_PATH=${TAR_GZ_NAME}" >> $GITHUB_OUTPUT
 
-      # 6. 创建Release并上传压缩包
       - name: Create Release & Upload Asset
         uses: softprops/action-gh-release@v1
         with:
