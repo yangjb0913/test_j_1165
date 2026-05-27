@@ -1,0 +1,61 @@
+name: Build Docker Image & Upload to Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 校验必需文件
+      - name: Check required files
+        run: |
+          REQUIRED_FILES=(
+            "Dockerfile"
+            "setup_env.sh"
+            "setup_repo.sh"
+          )
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "ERROR: 缺失必要文件 $file"
+              exit 1
+            fi
+          done
+          echo "所有必要文件校验通过"
+
+      # 引入重试组件，整体流程最多重试3次
+      name: Run build with retry
+      uses: nick-fields/retry@v3
+      with:
+        max_attempts: 3
+        retry_wait_seconds: 30
+        shell: bash
+        command: |
+          # 提取仓库名作为镜像名
+          REPO_NAME=${GITHUB_REPOSITORY#*/}
+          IMAGE_TAG=${GITHUB_REF#refs/tags/}
+          # 构建镜像
+          docker build -t ${REPO_NAME}:${IMAGE_TAG} .
+          # 导出并压缩镜像
+          TAR_FILE="${REPO_NAME}-${IMAGE_TAG}.tar"
+          docker save -o "${TAR_FILE}" "${REPO_NAME}:${IMAGE_TAG}"
+          gzip "${TAR_FILE}"
+          echo "ASSET_FILE=${TAR_FILE}.gz" >> $GITHUB_ENV
+
+      # 创建 Release 并上传文件
+      - name: Create Release & Upload Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ env.ASSET_FILE }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
