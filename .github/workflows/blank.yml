@@ -1,0 +1,53 @@
+name: Build Docker Image & Upload to Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    # 失败自动重试，总共尝试 3 次（首次+2次重试）
+    retry:
+      max-attempts: 3
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 定义变量：仓库名作为镜像名
+      - name: Set image info
+        id: vars
+        run: |
+          REPO_NAME=${GITHUB_REPOSITORY#*/}
+          IMAGE_TAG=${GITHUB_REF#refs/tags/}
+          echo "IMAGE_NAME=$REPO_NAME" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # 构建镜像
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.vars.outputs.IMAGE_NAME }}:${{ steps.vars.outputs.IMAGE_TAG }} .
+
+      # 导出并压缩镜像
+      - name: Export image to tar.gz
+        run: |
+          IMG_NAME=${{ steps.vars.outputs.IMAGE_NAME }}
+          IMG_TAG=${{ steps.vars.outputs.IMAGE_TAG }}
+          TAR_FILE="${IMG_NAME}-${IMG_TAG}.tar"
+          docker save -o "$TAR_FILE" "$IMG_NAME:$IMG_TAG"
+          gzip "$TAR_FILE"
+          echo "ASSET_FILE=${TAR_FILE}.gz" >> $GITHUB_ENV
+
+      # 创建 Release 并上传文件
+      - name: Create Release & Upload Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ env.ASSET_FILE }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
