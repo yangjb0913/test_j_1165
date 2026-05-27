@@ -9,9 +9,6 @@ on:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    retry:
-      max-attempts: 3
-      delay-seconds: 30
     permissions:
       contents: write
       packages: write
@@ -19,7 +16,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 校验必要文件：Dockerfile、setup_env.sh、setup_repo.sh
+      # 校验必需文件
       - name: Check required files
         run: |
           REQUIRED_FILES=(
@@ -35,28 +32,23 @@ jobs:
           done
           echo "所有必要文件校验通过"
 
-      # 定义变量：仓库名作为镜像名
-      - name: Set image info
-        id: vars
-        run: |
+      # 引入重试组件，整体流程最多重试3次
+      name: Run build with retry
+      uses: nick-fields/retry@v3
+      with:
+        max_attempts: 3
+        retry_wait_seconds: 30
+        shell: bash
+        command: |
+          # 提取仓库名作为镜像名
           REPO_NAME=${GITHUB_REPOSITORY#*/}
           IMAGE_TAG=${GITHUB_REF#refs/tags/}
-          echo "IMAGE_NAME=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      # 构建镜像
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ steps.vars.outputs.IMAGE_NAME }}:${{ steps.vars.outputs.IMAGE_TAG }} .
-
-      # 导出并压缩镜像
-      - name: Export image to tar.gz
-        run: |
-          IMG_NAME=${{ steps.vars.outputs.IMAGE_NAME }}
-          IMG_TAG=${{ steps.vars.outputs.IMAGE_TAG }}
-          TAR_FILE="${IMG_NAME}-${IMG_TAG}.tar"
-          docker save -o "$TAR_FILE" "$IMG_NAME:$IMG_TAG"
-          gzip "$TAR_FILE"
+          # 构建镜像
+          docker build -t ${REPO_NAME}:${IMAGE_TAG} .
+          # 导出并压缩镜像
+          TAR_FILE="${REPO_NAME}-${IMAGE_TAG}.tar"
+          docker save -o "${TAR_FILE}" "${REPO_NAME}:${IMAGE_TAG}"
+          gzip "${TAR_FILE}"
           echo "ASSET_FILE=${TAR_FILE}.gz" >> $GITHUB_ENV
 
       # 创建 Release 并上传文件
