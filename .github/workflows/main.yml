@@ -1,5 +1,6 @@
 name: Build Docker Image & Upload to Release
 
+# 触发规则：推送tag / 手动运行
 on:
   push:
     tags:
@@ -12,50 +13,66 @@ jobs:
     permissions:
       contents: write
       packages: write
+
     steps:
-      - name: Checkout code
+      # 1. 拉取仓库代码
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 校验必需文件
-      - name: Check required files
+      # 2. 校验必需文件，缺失则直接终止
+      - name: Verify required files
         run: |
-          REQUIRED_FILES=(
-            "Dockerfile"
-            "setup_env.sh"
-            "setup_repo.sh"
-          )
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "ERROR: 缺失必要文件 $file"
+          set -e
+          REQUIRED=(Dockerfile setup_env.sh setup_repo.sh)
+          for f in "${REQUIRED[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error file=$f::Missing required file: $f"
               exit 1
             fi
           done
-          echo "所有必要文件校验通过"
+          echo "All required files exist."
 
-      # 引入重试组件，整体流程最多重试3次
-      name: Run build with retry
-      uses: nick-fields/retry@v3
-      with:
-        max_attempts: 3
-        retry_wait_seconds: 30
-        shell: bash
-        command: |
-          # 提取仓库名作为镜像名
-          REPO_NAME=${GITHUB_REPOSITORY#*/}
-          IMAGE_TAG=${GITHUB_REF#refs/tags/}
-          # 构建镜像
-          docker build -t ${REPO_NAME}:${IMAGE_TAG} .
-          # 导出并压缩镜像
-          TAR_FILE="${REPO_NAME}-${IMAGE_TAG}.tar"
-          docker save -o "${TAR_FILE}" "${REPO_NAME}:${IMAGE_TAG}"
-          gzip "${TAR_FILE}"
-          echo "ASSET_FILE=${TAR_FILE}.gz" >> $GITHUB_ENV
+      # 3. 提取仓库名、版本Tag为全局变量
+      - name: Set image name and tag
+        id: image_meta
+        run: |
+          set -e
+          # 截取仓库名 (owner/repo -> repo)
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          # 截取 git tag
+          IMG_TAG="${GITHUB_REF#refs/tags/}"
+          echo "IMAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=${IMG_TAG}" >> $GITHUB_OUTPUT
 
-      # 创建 Release 并上传文件
+      # 4. 构建镜像（使用标准重试Action，最多尝试3次）
+      - name: Build Docker image
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: |
+            docker build -t ${{ steps.image_meta.outputs.IMAGE_NAME }}:${{ steps.image_meta.outputs.IMAGE_TAG }} .
+
+      # 5. 导出镜像为tar并压缩
+      - name: Export and compress image
+        id: export_tar
+        run: |
+          set -e
+          IMG_NAME=${{ steps.image_meta.outputs.IMAGE_NAME }}
+          IMG_TAG=${{ steps.image_meta.outputs.IMAGE_TAG }}
+          TAR_NAME="${IMG_NAME}-${IMG_TAG}.tar"
+          TAR_GZ_NAME="${TAR_NAME}.gz"
+
+          docker save -o "${TAR_NAME}" "${IMG_NAME}:${IMG_TAG}"
+          gzip "${TAR_NAME}"
+
+          echo "ASSET_PATH=${TAR_GZ_NAME}" >> $GITHUB_OUTPUT
+
+      # 6. 创建Release并上传压缩包
       - name: Create Release & Upload Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.ASSET_FILE }}
+          files: ${{ steps.export_tar.outputs.ASSET_PATH }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
