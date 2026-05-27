@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+      - '*'
   workflow_dispatch:
 
 jobs:
@@ -17,6 +20,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 赋予脚本执行权限
+      - name: Add execute permission for shell scripts
+        run: chmod +x *.sh
+
+      # 校验必需文件
       - name: Verify required files
         run: |
           set -e
@@ -29,16 +37,28 @@ jobs:
           done
           echo "All required files exist."
 
-      - name: Set image name and tag
+      # 解析镜像名 + 合法标签（区分 tag / 分支）
+      - name: Set image name and valid tag
         id: image_meta
         run: |
           set -e
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          IMG_TAG="${GITHUB_REF#refs/tags/}"
+          REF="${GITHUB_REF}"
+
+          # 判断是否为 tag 触发
+          if [[ "${REF}" == refs/tags/* ]]; then
+            IMG_TAG="${REF#refs/tags/}"
+          else
+            # 分支触发：截取分支名
+            BRANCH="${REF#refs/heads/}"
+            # 替换 / 为 _，规避 Docker 非法字符
+            IMG_TAG="${BRANCH//\//_}"
+          fi
+
           echo "IMAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
           echo "IMAGE_TAG=${IMG_TAG}" >> $GITHUB_OUTPUT
 
-      # 构建镜像：补充超时参数，消除报错
+      # 构建镜像（3次重试 + 完整日志）
       - name: Build Docker image
         uses: nick-fields/retry@v3
         with:
@@ -46,8 +66,9 @@ jobs:
           retry_wait_seconds: 30
           timeout_minutes: 30
           command: |
-            docker build -t ${{ steps.image_meta.outputs.IMAGE_NAME }}:${{ steps.image_meta.outputs.IMAGE_TAG }} .
+            docker build --progress plain -t ${{ steps.image_meta.outputs.IMAGE_NAME }}:${{ steps.image_meta.outputs.IMAGE_TAG }} .
 
+      # 导出并压缩镜像
       - name: Export and compress image
         id: export_tar
         run: |
@@ -55,13 +76,14 @@ jobs:
           IMG_NAME=${{ steps.image_meta.outputs.IMAGE_NAME }}
           IMG_TAG=${{ steps.image_meta.outputs.IMAGE_TAG }}
           TAR_NAME="${IMG_NAME}-${IMG_TAG}.tar"
-          TAR_GZ_NAME="${TAR_NAME}.gz"
+          TAR_GZ_NAME="${TAR_NAME}.tar.gz"
 
           docker save -o "${TAR_NAME}" "${IMG_NAME}:${IMG_TAG}"
           gzip "${TAR_NAME}"
 
           echo "ASSET_PATH=${TAR_GZ_NAME}" >> $GITHUB_OUTPUT
 
+      # 创建 Release 并上传文件
       - name: Create Release & Upload Asset
         uses: softprops/action-gh-release@v1
         with:
