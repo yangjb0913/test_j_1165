@@ -78,7 +78,7 @@ jobs:
           docker save -o "${TAR_FILE}" "${IMG_NAME}:${IMG_TAG}"
           echo "TAR_FILE=${TAR_FILE}" >> $GITHUB_OUTPUT
 
-      # 判断大小：>2G 分卷，否则压缩
+      # 判断大小：>2G 分卷，否则压缩（采用方案 A：统一放入 dist 目录）
       - name: Check size & split/compress
         id: handle_file
         run: |
@@ -86,26 +86,31 @@ jobs:
           TAR_FILE=${{ steps.export_tar.outputs.TAR_FILE }}
           SIZE_THRESHOLD=$((2048 * 1024 * 1024))
           FILE_SIZE=$(du -b "${TAR_FILE}" | awk '{print $1}')
-          ASSET_FILES=""
+
+          # 创建一个独立的资产目录
+          mkdir -p dist
 
           if [ "${FILE_SIZE}" -gt "${SIZE_THRESHOLD}" ]; then
             echo "File > 2GB, split to 1800M chunks"
-            split -b 1800M "${TAR_FILE}" "${TAR_FILE}.part"
-            ASSET_FILES="${TAR_FILE}.part*"
+            # 关键修改：直接将分卷生成到 dist 目录下
+            split -b 1800M "${TAR_FILE}" "dist/${TAR_FILE}.part"
           else
             echo "File <= 2GB, gzip compress"
             gzip "${TAR_FILE}"
-            ASSET_FILES="${TAR_FILE}.gz"
+            # 关键修改：压缩文件也移入 dist 目录
+            mv "${TAR_FILE}.gz" dist/
           fi
 
-          echo "ASSET_FILES=${ASSET_FILES}" >> $GITHUB_OUTPUT
+          # 打印 dist 目录，方便在日志中肉眼核对分卷是否成功
+          echo "=== Generated Assets ==="
+          ls -lh dist/
 
-      # 上传到 Actions Artifacts（所有场景都可用，兜底下载）
+      # 上传到 Actions Artifacts
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-package
-          path: ${{ steps.handle_file.outputs.ASSET_FILES }}
+          path: dist/                # 关键修改：直接上传整个目录
           retention-days: 30
 
       # 仅 Tag 触发时，才创建 Release 并上传
@@ -113,7 +118,7 @@ jobs:
         if: steps.image_meta.outputs.IS_TAG == 'true'
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ steps.handle_file.outputs.ASSET_FILES }}
+          files: dist/* # 关键修改：上传该目录下的所有文件
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
