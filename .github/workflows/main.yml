@@ -36,7 +36,7 @@ jobs:
             fi
           done
 
-      # 解析镜像名 + 合法标签
+      # 解析镜像名 + 合法标签 + 生成构建时间戳
       - name: Set image name and valid tag
         id: image_meta
         run: |
@@ -56,6 +56,9 @@ jobs:
           echo "IMAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
           echo "IMAGE_TAG=${IMG_TAG}" >> $GITHUB_OUTPUT
           echo "IS_TAG=${IS_TAG}" >> $GITHUB_OUTPUT
+          
+          # 【方案2新增】生成精准到秒的时间戳，解决非 Tag 构建时的 Release 重名冲突问题
+          echo "BUILD_TIME=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       # 构建镜像（3次重试）
       - name: Build Docker image
@@ -102,12 +105,11 @@ jobs:
           ls -lh dist/
 
           # 核心修复：强制展开通配符，将实际生成的所有分卷路径以多行文本形式写入环境变量。
-          # 这样能避免插件因并发扫描而遗漏掉刚刚写入磁盘的 1.8G+ 超大分卷文件。
           echo "UPLOAD_PATHS<<EOF" >> $GITHUB_ENV
           ls -d dist/* >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      # 1. 上传到 Actions Artifacts（严格按照明确的文件路径列表上传）
+      # 1. 上传到 Actions Artifacts
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -115,28 +117,28 @@ jobs:
           path: ${{ env.UPLOAD_PATHS }}
           retention-days: 30
 
-      # 2. 仅 Tag 触发时，才创建 Release 并上传
+      # 2. 无论什么情况触发，都自动创建独立的 Release 并上传分卷文件
       - name: Create Release & Upload to Release
-        if: steps.image_meta.outputs.IS_TAG == 'true'
         uses: softprops/action-gh-release@v1
         with:
           files: ${{ env.UPLOAD_PATHS }}
+          # 如果是 tag 触发用 tag 名；如果是普通分支/手动触发，用“分支名-时间戳”作为标签，防止报错冲突
+          tag_name: ${{ steps.image_meta.outputs.IS_TAG == 'true' && steps.image_meta.outputs.IMAGE_TAG || format('{0}-{1}', steps.image_meta.outputs.IMAGE_TAG, steps.image_meta.outputs.BUILD_TIME) }}
+          name: ${{ steps.image_meta.outputs.IS_TAG == 'true' && steps.image_meta.outputs.IMAGE_TAG || format('Build {0} ({1})', steps.image_meta.outputs.IMAGE_TAG, steps.image_meta.outputs.BUILD_TIME) }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 3. 任务彻底完成后，清理本地构建产生的大文件，释放磁盘空间
       - name: Clean up build artifacts
-        if: always() # 确保无论上传成功还是失败都会执行清理
+        if: always() # 确保无论成功失败都执行清理
         run: |
           echo "=== Starting Cleanup ==="
           TAR_FILE="${{ steps.export_tar.outputs.TAR_FILE }}"
           if [ -f "${TAR_FILE}" ]; then 
             rm -f "${TAR_FILE}"
-            echo "Deleted original tar file."
           fi
           if [ -d "dist" ]; then 
             rm -rf dist
-            echo "Deleted dist/ folder and all split parts."
           fi
           echo "=== Cleanup Completed ==="
