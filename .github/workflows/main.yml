@@ -1,4 +1,84 @@
-# 判断大小：>2G 分卷，否则压缩
+name: Build Docker Image & Upload
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'main'
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 赋予脚本执行权限
+      - name: Add execute permission for shell scripts
+        run: chmod +x *.sh
+
+      # 校验必需文件
+      - name: Verify required files
+        run: |
+          set -e
+          REQUIRED=(Dockerfile setup_env.sh setup_repo.sh)
+          for f in "${REQUIRED[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error file=$f::Missing required file: $f"
+              exit 1
+            fi
+          done
+
+      # 解析镜像名 + 合法标签
+      - name: Set image name and valid tag
+        id: image_meta
+        run: |
+          set -e
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          REF="${GITHUB_REF}"
+          IS_TAG=false
+
+          if [[ "${REF}" == refs/tags/* ]]; then
+            IMG_TAG="${REF#refs/tags/}"
+            IS_TAG=true
+          else
+            BRANCH="${REF#refs/heads/}"
+            IMG_TAG="${BRANCH//\//_}"
+          fi
+
+          echo "IMAGE_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=${IMG_TAG}" >> $GITHUB_OUTPUT
+          echo "IS_TAG=${IS_TAG}" >> $GITHUB_OUTPUT
+
+      # 构建镜像（3次重试）
+      - name: Build Docker image
+        uses: nick-fields/retry@v3
+        with:
+          max_attempts: 3
+          retry_wait_seconds: 30
+          timeout_minutes: 30
+          command: |
+            docker build --progress plain -t ${{ steps.image_meta.outputs.IMAGE_NAME }}:${{ steps.image_meta.outputs.IMAGE_TAG }} .
+
+      # 导出原始 tar 包
+      - name: Export image to tar
+        id: export_tar
+        run: |
+          set -e
+          IMG_NAME=${{ steps.image_meta.outputs.IMAGE_NAME }}
+          IMG_TAG=${{ steps.image_meta.outputs.IMAGE_TAG }}
+          TAR_FILE="${IMG_NAME}-${IMG_TAG}.tar"
+          docker save -o "${TAR_FILE}" "${IMG_NAME}:${IMG_TAG}"
+          echo "TAR_FILE=${TAR_FILE}" >> $GITHUB_OUTPUT
+
+      # 判断大小：>2G 分卷，否则压缩
       - name: Check size & split/compress
         id: handle_file
         run: |
@@ -21,18 +101,18 @@
           echo "=== Generated Assets ==="
           ls -lh dist/
 
-          # 【核心修复】强制展开通配符，将实际生成的所有文件路径，以多行文本形式写入环境变量和输出
-          # 这样能强迫后续的 upload-artifact 步骤严格按照文件列表逐个上传，绝不会漏掉大文件
+          # 核心修复：强制展开通配符，将实际生成的所有分卷路径以多行文本形式写入环境变量。
+          # 这样能避免插件因并发扫描而遗漏掉刚刚写入磁盘的 1.8G+ 超大分卷文件。
           echo "UPLOAD_PATHS<<EOF" >> $GITHUB_ENV
           ls -d dist/* >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      # 1. 上传到 Actions Artifacts（严格按照明确的文件列表上传）
+      # 1. 上传到 Actions Artifacts（严格按照明确的文件路径列表上传）
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-package
-          path: ${{ env.UPLOAD_PATHS }} # <-- 读取精准的文件列表，不让插件自己去扫描目录
+          path: ${{ env.UPLOAD_PATHS }}
           retention-days: 30
 
       # 2. 仅 Tag 触发时，才创建 Release 并上传
@@ -40,17 +120,23 @@
         if: steps.image_meta.outputs.IS_TAG == 'true'
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.UPLOAD_PATHS }} # <-- 同样使用精准列表
+          files: ${{ env.UPLOAD_PATHS }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 彻底清理
+      # 3. 任务彻底完成后，清理本地构建产生的大文件，释放磁盘空间
       - name: Clean up build artifacts
-        if: always()
+        if: always() # 确保无论上传成功还是失败都会执行清理
         run: |
           echo "=== Starting Cleanup ==="
           TAR_FILE="${{ steps.export_tar.outputs.TAR_FILE }}"
-          if [ -f "${TAR_FILE}" ]; then rm -f "${TAR_FILE}"; fi
-          if [ -d "dist" ]; then rm -rf dist; fi
+          if [ -f "${TAR_FILE}" ]; then 
+            rm -f "${TAR_FILE}"
+            echo "Deleted original tar file."
+          fi
+          if [ -d "dist" ]; then 
+            rm -rf dist
+            echo "Deleted dist/ folder and all split parts."
+          fi
           echo "=== Cleanup Completed ==="
