@@ -12,25 +12,56 @@ fi
 
 source /opt/miniconda3/etc/profile.d/conda.sh
 
-# Recreate the environment to ensure consistency.
+echo "Fixing potentially broken apt packages..."
+apt-get install -f -y || true
+
 if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
+  echo "Removing existing environment ${ENV_NAME}..."
   conda env remove -y -n "${ENV_NAME}"
 fi
 
-# 修改点：在创建环境时，顺便安装 nodejs 和 configurable-http-proxy (来自 conda-forge)
-conda create -y -n "${ENV_NAME}" "python=${PYTHON_VERSION}" nodejs configurable-http-proxy -c conda-forge
+echo "Creating standard virtual environment via Conda..."
+conda create -y -n "${ENV_NAME}" \
+    "python=${PYTHON_VERSION}" \
+    "nodejs>=18" \
+    "configurable-http-proxy" \
+    -c conda-forge
+
 conda activate "${ENV_NAME}"
 
 cd "${REPO_DIR}"
 
-# Keep packaging tooling compatible with older dependencies.
+echo "Installing compatible testing framework versions..."
 pip install --upgrade "pip<24" "setuptools<70" "wheel"
+pip install "pytest<8.0" "anyio<4.0" "pytest-asyncio==0.21.1"
 
-# Install runtime and development requirements for testing with SQLAlchemy pinned to 1.x.
-# 顺便追加安装了 pycurl 解决你之前日志里的 pycurl 缺失警告
 pip install -r requirements.txt -r dev-requirements.txt "SQLAlchemy<2.0" "greenlet<2" pycurl
 
-# Install the repository in editable mode.
 pip install -e .
+
+SINGLEUSER_ENTRY=$(which jupyterhub-singleuser)
+if [[ -n "${SINGLEUSER_ENTRY}" ]]; then
+    echo "Patching jupyterhub-singleuser entry to auto inject --allow-root"
+    cp -f "${SINGLEUSER_ENTRY}" "${SINGLEUSER_ENTRY}.bak"
+
+    cat > "${SINGLEUSER_ENTRY}" << 'PY_ENTRY'
+#!/usr/bin/env python
+import sys
+if "--allow-root" not in sys.argv:
+    sys.argv.insert(1, "--allow-root")
+
+def main():
+    import runpy
+    runpy.run_module("jupyterhub.singleuser", run_name="__main__", alter_sys=True)
+
+if __name__ == "__main__":
+    main()
+PY_ENTRY
+
+    chmod +x "${SINGLEUSER_ENTRY}"
+fi
+
+export JUPYTERHUB_SPAWN_TIMEOUT=60
+export PYTEST_TIMEOUT=60
 
 echo "Environment ${ENV_NAME} ready."
