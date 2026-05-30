@@ -31,7 +31,7 @@ source activate testbed
 # python -V
 
 #设置国内镜像，加速，发布时请注释掉
-mkdir ~/.pip
+mkdir -p ~/.pip
 echo -e "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/" > ~/.pip/pip.conf
 # mkdir -p ~/.config/uv
 # echo -e '[[index]]\nurl = "https://mirrors.aliyun.com/pypi/simple" \ndefault=true ' > ~/.config/uv/uv.toml
@@ -39,13 +39,20 @@ echo -e "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/" > ~/.pip
 #进入项目目录
 cd /testbed/pymatgen
 
-print_status "安装依赖..."
+print_status "安装基础编译工具..."
 pip install --upgrade pip setuptools wheel
 pip install cython
+
+print_status "修复环境依赖冲突..."
+# 1. 锁死 monty 版本，防止新版 monty 强制校验显式 rt/wt 模式导致旧版 pymatgen 报错
+pip install "monty<2024.10.21"
+# 2. 安装 pymongo 以补全 bson.objectid 依赖，解决 loadfn 时的 AttributeError
+pip install pymongo
+
+print_status "以可编辑模式安装 pymatgen 及其剩余依赖..."
 pip install -e .
 pip install ase
 pip install pytest
-
 
 # print_status "增加源码目录设置!"
 # echo 'export PYTHONPATH=$PYTHONPATH:/testbed/pymatgen/src' >> /root/.bashrc
