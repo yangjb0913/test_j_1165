@@ -14,7 +14,6 @@ print_status() {
 print_warning() {
     echo -e "${YELLOW}[WARN]${NC} $1"
 }
-
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
@@ -27,33 +26,44 @@ conda create -n testbed python=3.12 -y
 
 print_status "激活环境.."
 source activate testbed
-# 验证版本
-# python -V
 
-#设置国内镜像，加速，发布时请注释掉
+# 设置国内镜像（加速，可按需注释）
 mkdir -p ~/.pip
 echo -e "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/" > ~/.pip/pip.conf
-# mkdir -p ~/.config/uv
-# echo -e '[[index]]\nurl = "https://mirrors.aliyun.com/pypi/simple" \ndefault=true ' > ~/.config/uv/uv.toml
 
-#进入项目目录
+# 进入项目目录
 cd /testbed/pymatgen
 
-print_status "安装基础编译与环境依赖..."
+print_status "步骤 1: 优先应用 code.patch 和 test.patch 补丁..."
+# 检查根目录下是否存在补丁文件，若存在则优先 apply 
+if [ -f "/testbed/code.patch" ]; then
+    print_status "应用代码修复补丁 code.patch..."
+    git apply /testbed/code.patch
+fi
+
+if [ -f "/testbed/test.patch" ]; then
+    print_status "应用测试用例补丁 test.patch..."
+    git apply /testbed/test.patch
+fi
+
+print_status "步骤 2: 执行源码热补丁，根治旧代码与新版 monty.zopen() 的不兼容问题..."
+# 补丁应用完成后，对所有相关源码执行 sed 替换，确保完全兼容新版 monty
+# 1. 修复 structure.py 中的隐式 text 模式读取调用 (将 with zopen(filename) 显式改为 mode="rt")
+sed -i 's/with zopen(filename) as file:/with zopen(filename, mode="rt") as file:/g' src/pymatgen/core/structure.py
+
+# 2. 修复 io/gaussian.py 和 io/cif.py 等处写入时的隐式模式 (将 mode="w" 显式改为 mode="wt")
+sed -i 's/with zopen(filename, mode="w") as file:/with zopen(filename, mode="wt") as file:/g' src/pymatgen/io/gaussian.py
+sed -i 's/with zopen(filename, mode=mode) as file:/with zopen(filename, mode=mode if "t" in mode or "b" in mode else mode + "t") as file:/g' src/pymatgen/io/cif.py
+
+print_status "步骤 3: 安装编译工具与依赖..."
 pip install --upgrade pip setuptools wheel
-pip install cython
+pip install cython pymongo
 
-# 提前安装 pymongo 补全 bson 支持
-pip install pymongo
+print_status "步骤 4: 以可编辑模式安装 pymatgen 项目及其依赖..."
+# 让 pip 自由安装 pyproject.toml 声明的最新合适 monty 版本，不会再引发依赖树冲突
+pip install -e .
 
-print_status "同时安装项目与约束依赖（方案A）..."
-# 关键修复点：将项目安装与 monty 的旧版本约束合并到同一条 pip 命令中。
-# 这样 pip 依赖解析器会同时计算两个条件，迫使安装满足要求的旧版 monty，绝对不会升级到最新版。
-pip install -e . "monty<2024.10.21"
+print_status "步骤 5: 安装测试所需的额外第三方库..."
+pip install ase pytest
 
-print_status "安装剩余测试包..."
-pip install ase
-pip install pytest
-
-# print_status "增加源码目录设置!"
-# echo 'export PYTHONPATH=$PYTHONPATH:/testbed/pymatgen/src' >> /root/.bashrc
+print_status "环境部署与补丁修复成功，准备执行 pytest 测试！"
