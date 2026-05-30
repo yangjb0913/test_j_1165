@@ -29,6 +29,12 @@ pip install --upgrade "pip<24" "setuptools<70" "wheel"
 # Install runtime and development requirements for testing with SQLAlchemy pinned to 1.x.
 pip install -r requirements.txt -r dev-requirements.txt "SQLAlchemy<2.0" "greenlet<2"
 
+# ====================================================================
+# 【新增修复】强制降级 pytest 到 7.4.x 版本，以兼容旧版 JupyterHub 的测试语法
+# 这样可以防止 pytest 8.x 遇到 pytest.warns(None) 时抛出 TypeError 导致测试卡死
+# ====================================================================
+pip install "pytest<8.0.0" "pytest-asyncio<0.23.0"
+
 # Install the repository in editable mode.
 pip install -e .
 
