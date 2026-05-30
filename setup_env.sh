@@ -39,18 +39,19 @@ echo -e "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/" > ~/.pip
 #进入项目目录
 cd /testbed/pymatgen
 
-print_status "安装基础编译工具..."
+print_status "安装基础编译与环境依赖..."
 pip install --upgrade pip setuptools wheel
 pip install cython
 
-print_status "修复环境依赖冲突..."
-# 1. 锁死 monty 版本，防止新版 monty 强制校验显式 rt/wt 模式导致旧版 pymatgen 报错
-pip install "monty<2024.10.21"
-# 2. 安装 pymongo 以补全 bson.objectid 依赖，解决 loadfn 时的 AttributeError
+# 提前安装 pymongo 补全 bson 支持
 pip install pymongo
 
-print_status "以可编辑模式安装 pymatgen 及其剩余依赖..."
-pip install -e .
+print_status "同时安装项目与约束依赖（方案A）..."
+# 关键修复点：将项目安装与 monty 的旧版本约束合并到同一条 pip 命令中。
+# 这样 pip 依赖解析器会同时计算两个条件，迫使安装满足要求的旧版 monty，绝对不会升级到最新版。
+pip install -e . "monty<2024.10.21"
+
+print_status "安装剩余测试包..."
 pip install ase
 pip install pytest
 
